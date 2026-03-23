@@ -201,3 +201,18 @@ def my_login(username, password):
         if os.path.exists(LOGIN_KEY_FILE):
             os.remove(LOGIN_KEY_FILE)
         return False
+
+# ==========================================
+# 启动入口 (修改版)
+# ==========================================
+if __name__ == '__main__':
+    if not STEAM_USER or not STEAM_PASS:
+        print("❌ 错误: 请在 .env 文件中配置账号密码")
+    else:
+        init_db()
+        print(f"🚀 正在为 {STEAM_USER} 启动监控程序...")
+        
+        # 使用我们自定义的登录函数
+        if my_login(STEAM_USER, STEAM_PASS):
+            # 只有登录成功后才运行
+            client.run_forever()
