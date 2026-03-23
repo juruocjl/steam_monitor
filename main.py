@@ -69,48 +69,52 @@ class SteamMonitor(steam.Client):
             print(f"❌ DB Error: {e}")
 
     def parse_user_to_dict(self, user):
-        """对照 steamio 文档解析 User 对象"""
-        game = user.game
-        # steamio 中 Game 对象有 rich_presence 属性
-        rp = game.rich_presence if game else {}
+        """极其稳健的解析逻辑"""
+        # steamio 中，game 属性可能为 None
+        game = getattr(user, 'game', None)
+        # rich_presence 是 game 下的一个字典
+        rp = getattr(game, 'rich_presence', {}) if game else {}
         
         return {
             "steam_id": str(user.id64),
-            "name": user.name,
-            "state": str(user.status), # steamio 使用 .status
-            "game_appid": str(game.id) if game else "",
-            "game_name": game.name if game else "",
+            "name": user.name or "Unknown",
+            "state": str(user.status), # steamio 使用 .status 而不是 .state
+            "game_appid": str(getattr(game, 'id', "")),
+            "game_name": getattr(game, 'name', ""),
             "rich_display": rp.get('steam_display', ''),
             "party_id": rp.get('steam_player_group', '')
         }
 
-    # --- 官方事件重写 ---
+    # --- 事件监听 ---
     
     async def on_ready(self):
-        """当机器人成功连接并准备好后调用"""
         print(f"\n--- ✅ 登录成功！账号: {self.user.name} ---")
         
-        # 初始化缓存
-        for friend in self.friends:
+        # 修复 1: 使用 self.users 并过滤好友关系
+        # 注意：需要判断是否有 relationship 属性 (ClientUser 就没有)
+        friends = [u for u in self.users if getattr(u, 'relationship', None) == steam.Relationship.Friend]
+        
+        for friend in friends:
             data = self.parse_user_to_dict(friend)
             friends_cache[data['steam_id']] = data
         
-        print(f"👥 已监视 {len(self.friends)} 名好友。")
+        print(f"👥 正在监视 {len(friends)} 名好友。")
         
-        # 启动 Flask 线程
+        # 启动 Flask
         threading.Thread(target=run_flask, daemon=True).start()
         print("🌐 API 已就绪: http://localhost:5000/api/friends\n")
 
     async def on_user_update(self, before, after):
-        """核心：当好友信息变动时触发"""
-        # 只看好友，不看陌生人
-        if after.relationship != steam.Relationship.Friend:
+        """当好友状态变动时触发"""
+        # 修复 2: 使用 getattr 安全获取关系，排除掉机器人自己
+        rel = getattr(after, 'relationship', None)
+        if rel != steam.Relationship.Friend:
             return
 
         new_data = self.parse_user_to_dict(after)
         old_data = friends_cache.get(new_data['steam_id'], {})
 
-        # 变动检测：状态改变、游戏改变或富状态改变
+        # 变动检测：仅记录有意义的变化
         if (new_data['state'] != old_data.get('state') or 
             new_data['game_appid'] != old_data.get('game_appid') or 
             new_data['rich_display'] != old_data.get('rich_display')):
@@ -118,7 +122,6 @@ class SteamMonitor(steam.Client):
             friends_cache[new_data['steam_id']] = new_data
             self.log_to_db(new_data)
             
-            # 控制台输出日志
             game_msg = f" | 🎮 {new_data['game_name']}" if new_data['game_name'] else ""
             rp_msg = f" ({new_data['rich_display']})" if new_data['rich_display'] else ""
             print(f"✨ [变动] {new_data['name']} -> {new_data['state']}{game_msg}{rp_msg}")
