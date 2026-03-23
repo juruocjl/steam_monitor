@@ -165,14 +165,54 @@ def handle_state_change(user, _):
         g_info = f" | 🎮 {new_s['game_name']} ({new_s['rich_display']})" if new_s['game_name'] else ""
         print(f"[Update] {new_s['name']} -> {new_s['state']}{g_info}")
 
+# 定义存放登录令牌的文件
+LOGIN_KEY_FILE = "login_key.txt"
+
+def my_login(username, password):
+    """带自动令牌保存和读取的登录逻辑"""
+    
+    # 1. 尝试从本地文件读取旧的 login_key
+    cached_login_key = None
+    if os.path.exists(LOGIN_KEY_FILE):
+        with open(LOGIN_KEY_FILE, "r") as f:
+            cached_login_key = f.read().strip()
+            print(f"🔑 发现本地登录令牌，尝试免码登录...")
+
+    # 2. 执行登录
+    # 如果有 cached_login_key，cli_login 会尝试直接登录而不弹验证码
+    result = client.cli_login(
+        username=username, 
+        password=password, 
+        login_key=cached_login_key
+    )
+
+    if result == 1: # EResult.OK
+        # 3. 登录成功后，获取最新的 login_key 并保存
+        # 即使这次是输 code 登录的，拿到这个 key 后下次就不用输了
+        new_login_key = client.login_key
+        if new_login_key:
+            with open(LOGIN_KEY_FILE, "w") as f:
+                f.write(new_login_key)
+            print("💾 新的登录令牌已加密保存到本地。")
+        return True
+    else:
+        print(f"❌ 登录失败，错误码: {result}")
+        # 如果是因为令牌失效导致失败，可以考虑删掉文件重试
+        if os.path.exists(LOGIN_KEY_FILE):
+            os.remove(LOGIN_KEY_FILE)
+        return False
+
 # ==========================================
-# 启动
+# 启动入口 (修改版)
 # ==========================================
 if __name__ == '__main__':
     if not STEAM_USER or not STEAM_PASS:
-        print("❌ 错误: 请在 .env 文件中配置 STEAM_USERNAME 和 STEAM_PASSWORD")
+        print("❌ 错误: 请在 .env 文件中配置账号密码")
     else:
         init_db()
-        print(f"🚀 Starting bot for {STEAM_USER}...")
-        client.cli_login(username=STEAM_USER, password=STEAM_PASS)
-        client.run_forever()
+        print(f"🚀 正在为 {STEAM_USER} 启动监控程序...")
+        
+        # 使用我们自定义的登录函数
+        if my_login(STEAM_USER, STEAM_PASS):
+            # 只有登录成功后才运行
+            client.run_forever()
