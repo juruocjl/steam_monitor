@@ -22,7 +22,23 @@ app = Flask(__name__)
 
 @app.route('/api/friends', methods=['GET'])
 def get_friends():
-    return jsonify({"status": "success", "data": list(friends_cache.values())})
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    result = []
+    for item in friends_cache.values():
+        data = dict(item)
+        appid = str(data.get('game_appid') or '')
+        if appid:
+            c.execute('SELECT app_name, app_logo FROM app_name_map WHERE appid = ?', (appid,))
+            row = c.fetchone()
+            data['game_name'] = (row[0] if row and row[0] else '')
+            data['game_logo'] = (row[1] if row and row[1] else '')
+        else:
+            data['game_name'] = ''
+            data['game_logo'] = ''
+        result.append(data)
+    conn.close()
+    return jsonify({"status": "success", "data": result})
 
 def run_flask():
     app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
@@ -34,6 +50,8 @@ class SteamMonitor(steam.Client):
     
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self._app_meta_cooldown_seconds = 20
+        self._app_meta_fetch_lock = asyncio.Lock()
         self.init_db()
 
     def init_db(self):
@@ -45,24 +63,103 @@ class SteamMonitor(steam.Client):
                         name TEXT,
                         state TEXT,
                         game_appid TEXT,
-                        game_name TEXT,
-                        rich_display TEXT,
-                        party_id TEXT,
                         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                    )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS app_name_map (
+                        appid TEXT PRIMARY KEY,
+                        app_name TEXT,
+                        app_logo TEXT,
+                        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
                     )''')
         conn.commit()
         conn.close()
+
+    def get_db_app_meta(self, appid: str):
+        """返回 (app_name, app_logo)。"""
+        if not appid:
+            return '', ''
+        try:
+            conn = sqlite3.connect(DB_NAME)
+            c = conn.cursor()
+            c.execute('SELECT app_name, app_logo FROM app_name_map WHERE appid = ?', (appid,))
+            row = c.fetchone()
+            conn.close()
+            if row and (row[0] or row[1]):
+                app_name = row[0] or ''
+                app_logo = row[1] or ''
+                return app_name, app_logo
+        except Exception as e:
+            print(f"❌ AppName Cache Read Error: {e}")
+        return '', ''
+
+    def save_app_meta(self, appid: str, app_name: str, app_logo: str):
+        if not appid or (not app_name and not app_logo):
+            return
+        try:
+            conn = sqlite3.connect(DB_NAME)
+            c = conn.cursor()
+            c.execute(
+                '''INSERT INTO app_name_map (appid, app_name, app_logo, updated_at)
+                   VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                   ON CONFLICT(appid) DO UPDATE SET
+                     app_name = excluded.app_name,
+                     app_logo = excluded.app_logo,
+                     updated_at = CURRENT_TIMESTAMP''',
+                (appid, app_name, app_logo),
+            )
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"❌ AppName Cache Write Error: {e}")
+
+    async def resolve_app_meta(self, appid: str):
+        """异步通过 client.fetch_app 解析 app 元数据，并回填内存缓存/API 数据。"""
+        if not appid:
+            return
+
+        try:
+            cached_name, cached_logo = self.get_db_app_meta(appid)
+            if cached_name or cached_logo:
+                return
+
+            async with self._app_meta_fetch_lock:
+                # 双检，避免并发任务重复抓同一个 app
+                cached_name, cached_logo = self.get_db_app_meta(appid)
+                if cached_name or cached_logo:
+                    return
+
+                # 不同 app 的请求间隔冷却，降低触发风控概率
+                await asyncio.sleep(self._app_meta_cooldown_seconds)
+                fetch_target = int(appid) if str(appid).isdigit() else appid
+                fetched_app = await self.fetch_app(fetch_target)
+            if fetched_app is None:
+                return
+
+            app_name = str(getattr(fetched_app, 'name', '') or '')
+            app_logo = str(
+                getattr(fetched_app, 'logo', None)
+                or getattr(fetched_app, 'logo_url', None)
+                or getattr(fetched_app, 'header_image', None)
+                or getattr(fetched_app, 'icon_url', None)
+                or ''
+            )
+
+            if not app_name and not app_logo:
+                return
+
+            self.save_app_meta(appid, app_name, app_logo)
+        except Exception as e:
+            print(f"⚠️ fetch_app 解析失败 appid={appid}: {e}")
 
     def log_to_db(self, data):
         try:
             conn = sqlite3.connect(DB_NAME)
             c = conn.cursor()
             c.execute('''INSERT INTO status_log 
-                         (steam_id, name, state, game_appid, game_name, rich_display, party_id) 
-                         VALUES (?, ?, ?, ?, ?, ?, ?)''',
+                         (steam_id, name, state, game_appid) 
+                         VALUES (?, ?, ?, ?)''',
                       (data['steam_id'], data['name'], data['state'], 
-                       data['game_appid'], data['game_name'], 
-                       data['rich_display'], data['party_id']))
+                       data['game_appid']))
             conn.commit()
             conn.close()
         except Exception as e:
@@ -118,6 +215,14 @@ class SteamMonitor(steam.Client):
             or ''
         )
 
+        if game_appid:
+            cached_name, cached_logo = self.get_db_app_meta(str(game_appid))
+            if (not game_name and not cached_name) or (not cached_logo):
+                try:
+                    asyncio.get_running_loop().create_task(self.resolve_app_meta(str(game_appid)))
+                except RuntimeError:
+                    pass
+
         state_obj = getattr(user, 'state', None)
         if state_obj is None:
             state_text = "unknown"
@@ -157,7 +262,6 @@ class SteamMonitor(steam.Client):
             "name": getattr(user, 'name', '') or '',
             "state": state_text,
             "game_appid": str(game_appid),
-            "game_name": str(game_name),
             "rich_display": rich_display,
             "party_id": party_id,
         }
@@ -197,8 +301,10 @@ class SteamMonitor(steam.Client):
             
             friends_cache[new_data['steam_id']] = new_data
             self.log_to_db(new_data)
+
+            game_name, _ = self.get_db_app_meta(new_data['game_appid'])
             
-            game_msg = f" | 🎮 {new_data['game_name']}" if new_data['game_name'] else ""
+            game_msg = f" | 🎮 {game_name}" if game_name else ""
             rp_msg = f" ({new_data['rich_display']})" if new_data['rich_display'] else ""
             print(f"✨ [变动] {new_data['name']} -> {new_data['state']}{game_msg}{rp_msg}")
 
