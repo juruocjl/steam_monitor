@@ -14,6 +14,28 @@ STEAM_PASS = os.getenv("STEAM_PASSWORD")
 # 2. 全局数据存储
 friends_cache = {}
 DB_NAME = "steam_status.db"
+REFRESH_TOKEN_FILE = ".steam_refresh_token"
+
+
+def load_refresh_token() -> str:
+    if not os.path.exists(REFRESH_TOKEN_FILE):
+        return ""
+    try:
+        with open(REFRESH_TOKEN_FILE, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except Exception as e:
+        print(f"⚠️ 读取 refresh_token 失败: {e}")
+        return ""
+
+
+def save_refresh_token(token: str):
+    if not token:
+        return
+    try:
+        with open(REFRESH_TOKEN_FILE, "w", encoding="utf-8") as f:
+            f.write(token)
+    except Exception as e:
+        print(f"⚠️ 保存 refresh_token 失败: {e}")
 
 # ==========================================
 # Flask Web 服务 (独立运行)
@@ -250,6 +272,10 @@ class SteamMonitor(steam.Client):
     
     async def on_ready(self):
         print(f"\n--- ✅ 登录成功！账号: {self.user.name} ---")
+
+        token = getattr(self, 'refresh_token', None)
+        if token:
+            save_refresh_token(str(token))
         
         # ✅ 修复：改用 steam.FriendRelationship.Friend
         # 使用 getattr 获取 relationship，因为 self.user 没有这个属性
@@ -303,10 +329,23 @@ class SteamMonitor(steam.Client):
 # 启动
 # ==========================================
 if __name__ == "__main__":
-    # 根据 steamio 官方 Example 的启动方式
-    client = SteamMonitor()
+    # 优先使用本地 refresh_token 登录
+    refresh_token = load_refresh_token()
     try:
-        # 这个 run 会阻塞当前线程，并自动处理 asyncio 循环
-        client.run(STEAM_USER, STEAM_PASS)
+        if refresh_token:
+            print("🔑 检测到本地 refresh_token，优先使用 token 登录。")
+            client = SteamMonitor()
+            client.run(refresh_token=refresh_token)
+        else:
+            print("🔐 未检测到本地 refresh_token，使用账号密码登录。")
+            client = SteamMonitor()
+            client.run(STEAM_USER, STEAM_PASS)
+    except Exception as e:
+        if refresh_token:
+            print(f"⚠️ refresh_token 登录失败，回退账号密码登录: {e}")
+            client = SteamMonitor()
+            client.run(STEAM_USER, STEAM_PASS)
+        else:
+            raise
     except KeyboardInterrupt:
         print("\n🛑 程序已手动停止。")
