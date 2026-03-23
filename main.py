@@ -131,18 +131,23 @@ class SteamMonitor(steam.Client):
                 # 不同 app 的请求间隔冷却，降低触发风控概率
                 await asyncio.sleep(self._app_meta_cooldown_seconds)
                 fetch_target = int(appid) if str(appid).isdigit() else appid
-                fetched_app = await self.fetch_app(fetch_target)
+                fetched_app: steam.FetchedApp = await self.fetch_app(fetch_target)
             if fetched_app is None:
                 return
 
             app_name = str(getattr(fetched_app, 'name', '') or '')
-            app_logo = str(
+            logo_obj = (
                 getattr(fetched_app, 'logo', None)
                 or getattr(fetched_app, 'logo_url', None)
                 or getattr(fetched_app, 'header_image', None)
                 or getattr(fetched_app, 'icon_url', None)
-                or ''
             )
+            if isinstance(logo_obj, str):
+                app_logo = logo_obj
+            elif logo_obj is not None and hasattr(logo_obj, 'url'):
+                app_logo = str(getattr(logo_obj, 'url') or '')
+            else:
+                app_logo = ''
 
             if not app_name and not app_logo:
                 return
@@ -233,12 +238,35 @@ class SteamMonitor(steam.Client):
 
         rich_display = ""
         if isinstance(rp, dict):
-            rich_display = (
+            base_display = (
                 rp.get('status')
                 or rp.get('steam_display')
                 or rp.get('display')
                 or ''
             )
+
+            excluded_keys = {
+                'status',
+                'steam_display',
+                'display',
+                'steam_player_group_size',
+                'party_id',
+            }
+            extra_parts = []
+            for key in sorted(rp.keys()):
+                if key in excluded_keys:
+                    continue
+                value = rp.get(key)
+                if value in (None, ''):
+                    continue
+                extra_parts.append(f"{key}={value}")
+
+            if base_display and extra_parts:
+                rich_display = f"{base_display} | " + " | ".join(extra_parts)
+            elif base_display:
+                rich_display = base_display
+            else:
+                rich_display = " | ".join(extra_parts)
         elif hasattr(rp, 'get'):
             rich_display = (
                 rp.get('status')
