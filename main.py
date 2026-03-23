@@ -69,16 +69,13 @@ class SteamMonitor(steam.Client):
             print(f"❌ DB Error: {e}")
 
     def parse_user_to_dict(self, user):
-        """极其稳健的解析逻辑"""
-        # steamio 中，game 属性可能为 None
         game = getattr(user, 'game', None)
-        # rich_presence 是 game 下的一个字典
         rp = getattr(game, 'rich_presence', {}) if game else {}
         
         return {
             "steam_id": str(user.id64),
             "name": user.name or "Unknown",
-            "state": str(user.status), # steamio 使用 .status 而不是 .state
+            "state": str(user.status),
             "game_appid": str(getattr(game, 'id', "")),
             "game_name": getattr(game, 'name', ""),
             "rich_display": rp.get('steam_display', ''),
@@ -90,31 +87,35 @@ class SteamMonitor(steam.Client):
     async def on_ready(self):
         print(f"\n--- ✅ 登录成功！账号: {self.user.name} ---")
         
-        # 修复 1: 使用 self.users 并过滤好友关系
-        # 注意：需要判断是否有 relationship 属性 (ClientUser 就没有)
-        friends = [u for u in self.users if getattr(u, 'relationship', None) == steam.Relationship.Friend]
+        # ✅ 修复：改用 steam.FriendRelationship.Friend
+        # 使用 getattr 获取 relationship，因为 self.user 没有这个属性
+        friends = [u for u in self.users if getattr(u, 'relationship', None) == steam.FriendRelationship.Friend]
         
         for friend in friends:
             data = self.parse_user_to_dict(friend)
             friends_cache[data['steam_id']] = data
         
-        print(f"👥 正在监视 {len(friends)} 名好友。")
+        print(f"👥 正在监视 {len(friends)} 名好友数据。")
         
-        # 启动 Flask
+        # 启动 Flask 
         threading.Thread(target=run_flask, daemon=True).start()
         print("🌐 API 已就绪: http://localhost:5000/api/friends\n")
 
     async def on_user_update(self, before, after):
         """当好友状态变动时触发"""
-        # 修复 2: 使用 getattr 安全获取关系，排除掉机器人自己
+        # ✅ 修复：排除机器人自己 (self.user)
+        if after.id64 == self.user.id64:
+            return
+
+        # ✅ 修复：改用 steam.FriendRelationship.Friend
         rel = getattr(after, 'relationship', None)
-        if rel != steam.Relationship.Friend:
+        if rel != steam.FriendRelationship.Friend:
             return
 
         new_data = self.parse_user_to_dict(after)
         old_data = friends_cache.get(new_data['steam_id'], {})
 
-        # 变动检测：仅记录有意义的变化
+        # 变动检测逻辑
         if (new_data['state'] != old_data.get('state') or 
             new_data['game_appid'] != old_data.get('game_appid') or 
             new_data['rich_display'] != old_data.get('rich_display')):
