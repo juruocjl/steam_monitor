@@ -236,26 +236,7 @@ class SteamMonitor(steam.Client):
         else:
             state_text = str(state_obj)
 
-        rich_display = dict(rp) if isinstance(rp, dict) else {}
-        rich_display.pop('party_id', None)
-        rich_display.pop('steam_player_group_size', None)
-        if isinstance(rich_display.get('party'), dict):
-            rich_display['party'] = {
-                k: v for k, v in rich_display['party'].items() if k != 'id'
-            }
-
-        party_id = ""
-        party_size = ""
-        if isinstance(rp, dict):
-            party = rp.get('party') or {}
-            if isinstance(party, dict):
-                party_id = str(party.get('id') or '')
-            party_size = str(rp.get('steam_player_group_size') or '')
-        elif hasattr(rp, 'get'):
-            party = rp.get('party') or {}
-            if isinstance(party, dict):
-                party_id = str(party.get('id') or '')
-            party_size = str(rp.get('steam_player_group_size') or '')
+        rich_display = rp if isinstance(rp, dict) else {}
         
         return {
             "steam_id": str(getattr(user, 'id64', getattr(user, 'id', ''))),
@@ -263,8 +244,6 @@ class SteamMonitor(steam.Client):
             "state": state_text,
             "game_appid": str(game_appid),
             "rich_display": rich_display,
-            "party_id": party_id,
-            "party_size": party_size,
         }
 
     # --- 事件监听 ---
