@@ -308,6 +308,17 @@ class SteamMonitor(steam.Client):
             rp_msg = f" ({new_data['rich_display']})" if new_data['rich_display'] else ""
             print(f"✨ [变动] {new_data['name']} -> {new_data['state']}{game_msg}{rp_msg}")
 
+    async def on_invite(self, invite):
+        """自动通过好友邀请（仅 UserInvite）。"""
+        if isinstance(invite, steam.UserInvite):
+            try:
+                await invite.accept()
+                inviter = getattr(invite, 'author', None)
+                inviter_name = getattr(inviter, 'name', 'unknown') if inviter else 'unknown'
+                print(f"✅ 已自动通过好友请求: {inviter_name}")
+            except Exception as e:
+                print(f"❌ 自动通过好友请求失败: {e}")
+
 # ==========================================
 # 启动
 # ==========================================
