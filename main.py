@@ -340,12 +340,7 @@ if __name__ == "__main__":
             print("🔐 未检测到本地 refresh_token，使用账号密码登录。")
             client = SteamMonitor()
             client.run(STEAM_USER, STEAM_PASS)
-    except Exception as e:
-        if refresh_token:
-            print(f"⚠️ refresh_token 登录失败，回退账号密码登录: {e}")
-            client = SteamMonitor()
-            client.run(STEAM_USER, STEAM_PASS)
-        else:
-            raise
+    except Exception:
+        raise
     except KeyboardInterrupt:
         print("\n🛑 程序已手动停止。")
