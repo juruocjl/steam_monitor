@@ -120,6 +120,7 @@ def handle_logged_on():
     print("\n--- ✅ Logged in to Steam ---")
     if not client.friends.ready:
         client.friends.wait_event('ready')
+    client.persona_state = EPersonaState.Online
     
     print(f"👥 Processing {len(client.friends)} contacts...")
     for friend in client.friends:
