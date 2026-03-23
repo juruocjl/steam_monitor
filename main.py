@@ -6,22 +6,20 @@ from dotenv import load_dotenv
 from steam.client import SteamClient
 from steam.enums import EPersonaState, EFriendRelationship
 
-# 1. 加载环境变量
+# 1. 加载配置 (仅读取账密)
 load_dotenv()
-
 STEAM_USER = os.getenv("STEAM_USERNAME")
 STEAM_PASS = os.getenv("STEAM_PASSWORD")
-
 
 app = Flask(__name__)
 client = SteamClient()
 
-# 内存缓存与数据库名
-friends_cache = {} 
 DB_NAME = "steam_status.db"
+LOGIN_KEY_FILE = "login_key.txt"
+friends_cache = {}
 
 # ==========================================
-# 数据库逻辑
+# 1. 数据库持久化逻辑
 # ==========================================
 def init_db():
     conn = sqlite3.connect(DB_NAME)
@@ -54,39 +52,15 @@ def log_to_db(status):
         conn.commit()
         conn.close()
     except Exception as e:
-        print(f"❌ DB Error: {e}")
+        print(f"❌ 数据库写入失败: {e}")
 
 # ==========================================
-# Web API 逻辑
-# ==========================================
-@app.route('/api/friends', methods=['GET'])
-def get_all_friends():
-    final_data = []
-    for steam_id, status in friends_cache.items():
-        friend_data = dict(status)
-        party_members = []
-        if friend_data.get('party_id') and friend_data.get('game_appid'):
-            for o_id, o_status in friends_cache.items():
-                if (o_id != steam_id and 
-                    o_status.get('party_id') == friend_data['party_id'] and 
-                    o_status.get('game_appid') == friend_data['game_appid']):
-                    party_members.append(o_status['name'])
-        friend_data['party_members'] = party_members
-        final_data.append(friend_data)
-    return jsonify({"status": "success", "data": final_data})
-
-def run_api_server():
-    print("🌐 API Server running at http://localhost:5000/api/friends")
-    app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
-
-# ==========================================
-# 解析逻辑 (修复 AttributeError)
+# 2. 解析玩家状态
 # ==========================================
 def parse_user_status(user):
     if not user: return None
     try:
         state_name = EPersonaState(user.state).name
-        # 兼容性写法：使用 getattr 获取动态属性
         game_id = getattr(user, 'game_id', None)
         game_appid = str(game_id) if game_id else ""
         game_name = getattr(user, 'game_name', "") or ""
@@ -109,23 +83,49 @@ def parse_user_status(user):
             "party_id": party_id
         }
     except Exception as e:
-        print(f"⚠️ Parse error for {user.steam_id}: {e}")
+        print(f"⚠️ 解析用户 {user.steam_id} 失败: {e}")
         return None
 
 # ==========================================
-# Steam 事件监听
+# 3. Web API 接口
 # ==========================================
+@app.route('/api/friends', methods=['GET'])
+def get_all_friends():
+    final_data = []
+    for steam_id, status in friends_cache.items():
+        friend_data = dict(status)
+        party_members = []
+        if friend_data.get('party_id') and friend_data.get('game_appid'):
+            for o_id, o_status in friends_cache.items():
+                if (o_id != steam_id and 
+                    o_status.get('party_id') == friend_data['party_id'] and 
+                    o_status.get('game_appid') == friend_data['game_appid']):
+                    party_members.append(o_status['name'])
+        friend_data['party_members'] = party_members
+        final_data.append(friend_data)
+    return jsonify({"status": "success", "data": final_data})
+
+# ==========================================
+# 4. Steam 事件处理
+# ==========================================
+@client.on('login_key_callback')
+def save_login_key(key):
+    if key:
+        with open(LOGIN_KEY_FILE, "w") as f:
+            f.write(key)
+        print(f"💾 登录令牌已保存到 {LOGIN_KEY_FILE}")
+
 @client.on('logged_on')
 def handle_logged_on():
-    print("\n--- ✅ Logged in to Steam ---")
-    if not client.friends.ready:
-        client.friends.wait_event('ready')
+    print("\n--- ✅ 成功登录 Steam 网络 ---")
     client.persona_state = EPersonaState.Online
     
-    print(f"👥 Processing {len(client.friends)} contacts...")
+    if not client.friends.ready:
+        client.friends.wait_event('ready')
+    
+    print(f"👥 初始化 {len(client.friends)} 名联系人...")
     for friend in client.friends:
         if friend.relationship == EFriendRelationship.RequestRecipient:
-            print(f"💌 Auto-accepting invite from: {friend.name or friend.steam_id}")
             client.friends.add(friend.steam_id)
             continue
             
@@ -133,17 +133,16 @@ def handle_logged_on():
         if status:
             friends_cache[status['steam_id']] = status
             
-    threading.Thread(target=run_api_server, daemon=True).start()
-    print("👀 Monitoring started...\n")
+    threading.Thread(target=lambda: app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False), daemon=True).start()
+    print("👀 监控已就绪。\n")
 
 @client.friends.on('friend_invite')
 def handle_friend_invite(user):
-    print(f"💌 Real-time invite from {user.name or user.steam_id}, accepting...")
+    print(f"💌 自动通过来自 {user.name or user.steam_id} 的请求")
     client.friends.add(user.steam_id)
 
 @client.on('persona_state_updated')
 def handle_state_change(user, _):
-    # 仅处理正式好友
     if user.relationship != EFriendRelationship.Friend:
         return
 
@@ -153,7 +152,6 @@ def handle_state_change(user, _):
     sid = new_s['steam_id']
     old_s = friends_cache.get(sid, {})
     
-    # 防抖校验
     if (new_s['state'] != old_s.get('state') or 
         new_s['game_appid'] != old_s.get('game_appid') or 
         new_s['rich_display'] != old_s.get('rich_display') or 
@@ -163,56 +161,29 @@ def handle_state_change(user, _):
         log_to_db(new_s)
         
         g_info = f" | 🎮 {new_s['game_name']} ({new_s['rich_display']})" if new_s['game_name'] else ""
-        print(f"[Update] {new_s['name']} -> {new_s['state']}{g_info}")
-
-# 定义存放登录令牌的文件
-LOGIN_KEY_FILE = "login_key.txt"
-
-def my_login(username, password):
-    """手动处理 login_key 的登录逻辑"""
-    
-    # 1. 尝试读取本地保存的令牌
-    cached_login_key = None
-    if os.path.exists(LOGIN_KEY_FILE):
-        with open(LOGIN_KEY_FILE, "r") as f:
-            cached_login_key = f.read().strip()
-            print(f"🔑 发现本地登录令牌，尝试免码登录...")
-
-    # 2. 设置登录参数
-    # 如果有 key，Steam 库在尝试 login 时会优先使用它
-    if cached_login_key:
-        client.login_key = cached_login_key
-        client.username = username
-
-    # 3. 执行登录
-    # 注意：这里改用 cli_login 的标准调用，它会自动识别 client 对象上已有的属性
-    result = client.cli_login(username=username, password=password)
-
-    if result == 1: # EResult.OK
-        # 4. 登录成功后，保存最新的 login_key
-        # 这个 key 是 Steam 颁发的，有效期通常很长
-        if client.login_key:
-            with open(LOGIN_KEY_FILE, "w") as f:
-                f.write(client.login_key)
-            print("💾 登录令牌已更新并保存。")
-        return True
-    else:
-        print(f"❌ 登录失败，错误码: {result}")
-        if os.path.exists(LOGIN_KEY_FILE):
-            os.remove(LOGIN_KEY_FILE)
-        return False
+        print(f"[更新] {new_s['name']} -> {new_s['state']}{g_info}")
 
 # ==========================================
-# 启动入口 (修改版)
+# 5. 启动逻辑
 # ==========================================
 if __name__ == '__main__':
     if not STEAM_USER or not STEAM_PASS:
-        print("❌ 错误: 请在 .env 文件中配置账号密码")
+        print("❌ 错误: 请在 .env 配置 STEAM_USERNAME 和 STEAM_PASSWORD")
     else:
         init_db()
-        print(f"🚀 正在为 {STEAM_USER} 启动监控程序...")
         
-        # 使用我们自定义的登录函数
-        if my_login(STEAM_USER, STEAM_PASS):
-            # 只有登录成功后才运行
-            client.run_forever()
+        if os.path.exists(LOGIN_KEY_FILE):
+            with open(LOGIN_KEY_FILE, "r") as f:
+                client.login_key = f.read().strip()
+                client.username = STEAM_USER
+                print("🔑 载入本地令牌...")
+
+        try:
+            # 依靠外部 proxychains4 处理网络
+            result = client.cli_login(username=STEAM_USER, password=STEAM_PASS)
+            if result == 1:
+                client.run_forever()
+            else:
+                print(f"❌ 登录失败: {result}")
+        except KeyboardInterrupt:
+            print("\n🛑 已停止。")
