@@ -68,18 +68,98 @@ class SteamMonitor(steam.Client):
         except Exception as e:
             print(f"❌ DB Error: {e}")
 
-    def parse_user_to_dict(self, user):
-        game = getattr(user, 'game', None)
-        rp = getattr(game, 'rich_presence', {}) if game else {}
+    def _debug_dump_user(self, user: steam.User):
+        """调试用：尽可能完整打印 User 信息，便于确认字段结构。"""
+        print("\n========== [DEBUG] User Full Dump ==========")
+        print(f"repr: {user!r}")
+
+        # 优先打印 __dict__（如果存在）
+        raw_dict = getattr(user, '__dict__', None)
+        if isinstance(raw_dict, dict):
+            print("__dict__:")
+            for k in sorted(raw_dict.keys()):
+                print(f"  - {k}: {raw_dict[k]!r}")
+
+        # 兜底：遍历属性，过滤私有和可调用对象
+        print("attributes:")
+        for attr in sorted(dir(user)):
+            if attr.startswith('_'):
+                continue
+            try:
+                value = getattr(user, attr)
+            except Exception as e:
+                print(f"  - {attr}: <error: {e}>")
+                continue
+            if callable(value):
+                continue
+            print(f"  - {attr}: {value!r}")
+
+        print("===========================================\n")
+
+    def parse_user_to_dict(self, user: steam.User):
+        rp = getattr(user, 'rich_presence', None)
+        if rp is None:
+            rp = {}
+
+        self._debug_dump_user(user)
+
+        app = getattr(user, 'app', None)
+        game_appid = (
+            getattr(user, 'game_appid', None)
+            or getattr(user, 'game_id', None)
+            or getattr(user, 'app_id', None)
+            or getattr(app, 'id', None)
+            or ''
+        )
+        game_name = (
+            getattr(user, 'game_name', None)
+            or getattr(user, 'current_game_name', None)
+            or getattr(app, 'name', None)
+            or ''
+        )
+
+        state_obj = getattr(user, 'state', None)
+        if state_obj is None:
+            state_text = "unknown"
+        elif hasattr(state_obj, 'name'):
+            state_text = str(state_obj.name).lower()
+        else:
+            state_text = str(state_obj)
+
+        rich_display = ""
+        if isinstance(rp, dict):
+            rich_display = (
+                rp.get('status')
+                or rp.get('steam_display')
+                or rp.get('display')
+                or ''
+            )
+        elif hasattr(rp, 'get'):
+            rich_display = (
+                rp.get('status')
+                or rp.get('steam_display')
+                or rp.get('display')
+                or ''
+            )
+
+        party_id = ""
+        if isinstance(rp, dict):
+            party = rp.get('party') or {}
+            if isinstance(party, dict):
+                party_id = str(party.get('id') or '')
+        elif hasattr(rp, 'get'):
+            party = rp.get('party') or {}
+            if isinstance(party, dict):
+                party_id = str(party.get('id') or '')
         
         return {
-            "steam_id": str(user.id64),
-            "name": user.name or "Unknown",
-            "state": str(user.status),
-            "game_appid": str(getattr(game, 'id', "")),
-            "game_name": getattr(game, 'name', ""),
-            "rich_display": rp.get('steam_display', ''),
-            "party_id": rp.get('steam_player_group', '')
+            "steam_id": str(getattr(user, 'id64', getattr(user, 'id', ''))),
+            "name": getattr(user, 'name', '') or '',
+            "state": state_text,
+            "game_appid": str(game_appid),
+            "game_name": str(game_name),
+            "rich_display": rich_display,
+            "party_id": party_id,
         }
 
     # --- 事件监听 ---
