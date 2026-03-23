@@ -89,7 +89,7 @@ class SteamMonitor(steam.Client):
         
         # ✅ 修复：改用 steam.FriendRelationship.Friend
         # 使用 getattr 获取 relationship，因为 self.user 没有这个属性
-        friends = [u for u in self.users if getattr(u, 'relationship', None) == steam.FriendRelationship.Friend]
+        friends = [u for u in self.users]
         
         for friend in friends:
             data = self.parse_user_to_dict(friend)
@@ -105,11 +105,6 @@ class SteamMonitor(steam.Client):
         """当好友状态变动时触发"""
         # ✅ 修复：排除机器人自己 (self.user)
         if after.id64 == self.user.id64:
-            return
-
-        # ✅ 修复：改用 steam.FriendRelationship.Friend
-        rel = getattr(after, 'relationship', None)
-        if rel != steam.FriendRelationship.Friend:
             return
 
         new_data = self.parse_user_to_dict(after)
